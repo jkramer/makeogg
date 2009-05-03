@@ -1,0 +1,8 @@
+
+makeogg, Copyright (C) 2007-2009 by Jonas Kramer. All rights reserved.
+Published under the terms of the GNU General Public License (GPL).
+
+Convert MP3 and WAV files to OGG Vorbis, trying to retain the ID3 data (if
+input file is a MP3).
+
+Requirements: oggenc, mplayer, madplay
