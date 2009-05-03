@@ -1,0 +1,157 @@
+#!/bin/bash
+# makeogg, Copyright (C) 2007-2009 by Jonas Kramer.
+# Published under the terms of the GNU General Public License (GPL).
+
+# Convert MP3 and WAV files to OGG Vorbis, trying to retain the
+# ID3 data (if input file is a MP3).
+#
+# Depends on oggenc for encoding and madplay for decoding MPs and getting
+# their ID3 tags, plus some other tools that should be installed on any
+# Linux system anyway (rm, sed, mktemp).
+
+LOG="/dev/null"
+
+for PROGRAM in "oggenc" "mplayer" "madplay" "sed" "mktemp" "rm" "cat"; do
+	PROGPATH="`which "$PROGRAM" 2>$LOG`"
+	if [ -z "$PROGPATH" ]; then
+		echo "$PROGRAM is not in your \$PATH." >&2
+		exit -1
+	fi
+	export $PROGRAM="$PROGPATH"
+done
+
+tag ()
+{
+	FILE="$1"
+	$madplay -Q -T "$FILE" 2>&1 |\
+	while read LINE; do
+		TAG="`echo "$LINE" | sed -e "s/: .*\$//" | tr [A-Z] [a-z]`"
+		VALUE="`echo "$LINE" | sed -e "s/^.*: //"`"
+		if [ "$TAG" = "$2" ]; then
+			echo "$VALUE"
+		fi
+	done
+}
+
+DELETE="nope"; OVERWRITE="nope"; QUIET="nope"
+
+while getopts ":odqh" OPTION; do
+	case $OPTION in
+		"d") DELETE="sure" ;;
+		"o") OVERWRITE="hell, yeah" ;;
+		"q") QUIET="yup" ;;
+		"?")
+			echo "Unknown option -$OPTARG."
+			exit -1
+			;;
+		"h")
+			$cat <<EOT
+Usage: `basename "$0"` [-o|-q|-d|-h] [....mp3] [....wav]
+
+	-h  Print this help and exit.
+	-q  Don't print progress information, only errors if occuring.
+	-d  Delete given files after (successfully) converting them.
+	-o  Overwrite .ogg file if already existing (instead of skipping).
+
+EOT
+			exit
+			;;
+	esac
+done
+
+ARGV=("$@")
+
+for ARGNO in `seq $[OPTIND - 1] $[${#@} - 1]`; do
+	FILE="${ARGV[$ARGNO]}"
+
+	[ "$QUIET" = "nope" ] && echo -n "Processing \"$FILE\"... "
+
+	EXTENSION="`echo "$FILE" | $sed -e "s/^.*\\.//" | tr [A-Z] [a-z]`"
+	if [ -z "$EXTENSION" ]; then
+		if [ "$QUIET" = "nope" ]; then
+			echo "missing extension."
+		else
+			echo "File \"$FILE\" has no extension." >&2
+		fi
+		continue
+	fi
+
+	BASENAME="`echo "$FILE" | sed -e "s/\\.$EXTENSION\$//"`"
+	OUTPUT="${BASENAME}.ogg"
+
+	if [ -f "$OUTPUT" -a "$OVERWRITE" = "nope" ]; then
+		if [ "$QUIET" = "nope" ]; then
+			echo "skipped; file already existing."
+		else
+			echo "File \"$OUTPUT\" already existing." >&2
+		fi
+		continue
+	fi
+
+	REMOVEWAVE="YES"
+
+	if [ "$EXTENSION" = "mp3" ]; then
+		T="`tag "$FILE" "title"`"
+		A="`tag "$FILE" "artist"`"
+		L="`tag "$FILE" "album"`"
+		G="`tag "$FILE" "genre"`"
+		Y="`tag "$FILE" "year"`"
+		N="`tag "$FILE" "track"`"
+
+		WAVE="`$mktemp -p . "wave-dump.XXXXXX"`"
+		if ! $madplay -Q -o "wave:$WAVE" "$FILE" 2>$LOG; then
+			test -f "$WAVE" && $rm "$WAVE"
+			echo "decoding failed."
+			exit -1
+		fi
+	elif [ "$EXTENSION" = "wav" ]; then
+		WAVE="$FILE"
+		REMOVEWAVE="NO"
+	elif [ "$EXTENSION" = "mpc" ]; then
+		T="`tag "$FILE" "title"`"
+		A="`tag "$FILE" "artist"`"
+		L="`tag "$FILE" "album"`"
+		G="`tag "$FILE" "genre"`"
+		Y="`tag "$FILE" "year"`"
+		N="`tag "$FILE" "track"`"
+
+		WAVE="`$mktemp -p . "wave-dump.XXXXXX"`"
+		if ! $mppdec "$FILE" "$WAVE" 2>$LOG; then
+			echo "decoding failed."
+			exit -1
+		fi
+	elif [ "$EXTENSION" = "wma" ]; then
+		if ! $mplayer -vo null -vc dummy -af resample=44100 -ao pcm:waveheader "$FILE" 2>$LOG; then
+			echo "decoding failed."
+			exit -1
+		else
+			test -f audiodump.wav && $mv audiodump.wav "$WAVE"
+		fi
+	else
+		if [ "$QUIET" = "nope" ]; then
+			echo "extension \"$EXTENSION\" not supported."
+		else
+			echo "Extension \"$EXTENSION\" not supported ($FILE)." >&2
+		fi
+		continue
+	fi
+
+	$oggenc -Q -q 10 -o "$OUTPUT" -t "$T" -a "$A" -l "$L" -G "$G" -d "$Y" -N "$N" "$WAVE" 2>$LOG
+	SUCCESS="$?"
+
+	test -f "$WAVE" -a "$REMOVEWAVE" = "YES" && $rm "$WAVE"
+
+	if [ "$SUCCESS" -eq 0 ]; then
+		[ "$QUIET" = "nope" ] && echo "done."
+		if [ "$DELETE" != "nope" ]; then
+			rm -f "$FILE"
+		fi
+	else
+		if [ "$QUIET" = "nope" ]; then
+			echo "encoding failed."
+		else
+			echo "Encoding of file \"$FILE\" failed." >&2
+		fi
+	fi
+done
+
